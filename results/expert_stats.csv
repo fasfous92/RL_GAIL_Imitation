@@ -1,0 +1,13 @@
+env_name,nb_trajectories,mean_reward,std_reward
+CartPole-v1,4,500.00,0.00
+CartPole-v1,7,500.00,0.00
+CartPole-v1,10,500.00,0.00
+MountainCar-v0,4,-112.40,1.02
+MountainCar-v0,7,-112.40,1.02
+MountainCar-v0,10,-112.40,1.02
+Acrobot-v1,4,-68.80,7.43
+Acrobot-v1,7,-68.80,7.43
+Acrobot-v1,10,-68.80,7.43
+MountainCar-v0,4,-100.10,6.04
+MountainCar-v0,7,-100.10,6.04
+MountainCar-v0,10,-100.10,6.04
