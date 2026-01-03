@@ -3,3 +3,4 @@ stable-baselines3
 gymnasium 
 torch 
 sb3-contrib
+numpy<=2.0.0

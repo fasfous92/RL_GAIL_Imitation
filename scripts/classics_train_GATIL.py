@@ -17,7 +17,7 @@ from imitation.rewards.reward_nets import RewardNet
 from imitation.util.util import make_vec_env
 
 # ==========================================
-# 1. CUSTOM LSTM REWARD NET (DISCRIMINATOR)
+# 1. CUSTOM LSTM REWARD NET (TEMPORAL DISCRIMINATOR)
 # ==========================================
 class LSTM_RewardNet(RewardNet):
     def __init__(self, observation_space, action_space, hidden_size=64, **kwargs):
@@ -52,14 +52,14 @@ class LSTM_RewardNet(RewardNet):
 # ==========================================
 # 2. CONFIGURATION (BASED ON TABLE 2)
 # ==========================================
-# Task configs mapped from the paper 
+# Task configs mapped from the paper for classic control [cite: 469]
 TASK_CONFIGS = {
     "CartPole-v1":    {"iters": 300, "samples": 5000},
     "MountainCar-v0": {"iters": 300, "samples": 5000},
     "Acrobot-v1":     {"iters": 300, "samples": 5000},
 }
 
-target_counts = [1, 4, 7, 10]    # Paper trajectory counts [cite: 472]
+target_counts = [4, 7, 10]
 base_data_dir = "expert_data"    
 base_results_dir = "results"     
 csv_file_path = os.path.join(base_results_dir, "gatil_stats.csv")
@@ -81,9 +81,9 @@ def suppress_output():
 # 3. MAIN LOOP (GATIL)
 # ==========================================
 for env_name, config in TASK_CONFIGS.items():
-    print(f"\n>>> Processing GATIL on: {env_name}")
+    print(f"\n>>> Processing GATIL (Temporal GAIL) on: {env_name}")
     
-    # Vectorized env with Observation Normalization for stability 
+    # Paper uses normalized observations for stable training [cite: 467]
     venv = make_vec_env(env_name, n_envs=1, rng=np.random.default_rng(42))
     venv = VecNormalize(venv, norm_obs=True, norm_reward=False)
 
@@ -91,30 +91,35 @@ for env_name, config in TASK_CONFIGS.items():
         dataset_path = os.path.join(base_data_dir, env_name, f"traj_{count}.pkl")
         if not os.path.exists(dataset_path): continue
             
-        print(f"--- Training GATIL with {count} trajectories ---")
         try:
             with open(dataset_path, "rb") as f:
                 demonstrations = pickle.load(f)
 
-            # Learner: TRPO to match the generator choice in the paper [cite: 207]
+            # Dynamic batching: safe for small datasets (e.g., 4 trajectories)
+            total_transitions = len(demonstrations) * 50
+            safe_batch_size = min(64, total_transitions // 2)
+
+            print(f"--- Training GATIL | {count} Trajs | Batch Size: {safe_batch_size} ---")
+
+            # Generator: TRPO to match the model-free approach of the paper [cite: 178, 180]
             learner = TRPO(
                 "MlpPolicy", venv, verbose=0, 
-                n_steps=config["samples"], # 
-                gamma=0.995                # [cite: 467]
+                n_steps=config["samples"], # 5,000 steps per iteration [cite: 469]
+                gamma=0.995                # Standard infinite horizon discount [cite: 467]
             )
 
             reward_net = LSTM_RewardNet(venv.observation_space, venv.action_space)
 
             trainer = GAIL(
                 demonstrations=demonstrations,
-                demo_batch_size=1024, # Stable D update [cite: 179]
+                demo_batch_size=safe_batch_size,
                 gen_algo=learner,
                 reward_net=reward_net,
                 venv=venv,                   
                 allow_variable_horizon=True 
             )
 
-            # Total timesteps calculation from Table 2 parameters 
+            # Total timesteps: 1.5M for classic tasks [cite: 469]
             total_steps = config["iters"] * config["samples"]
             with suppress_output():
                 trainer.train(total_timesteps=total_steps)

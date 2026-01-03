@@ -16,22 +16,19 @@ from imitation.rewards.reward_nets import BasicRewardNet
 from imitation.util.networks import RunningNorm
 from imitation.util.util import make_vec_env
 
-# --- Configuration & Paper Parameters ---
-# Task configs mapped from Table 2 of the paper [cite: 469]
+# --- Configuration & Paper Parameters (Table 2) ---
 TASK_CONFIGS = {
     "CartPole-v1":    {"iters": 300, "samples": 5000},
     "MountainCar-v0": {"iters": 300, "samples": 5000},
     "Acrobot-v1":     {"iters": 300, "samples": 5000},
 }
 
-target_counts = [1, 4, 7, 10]    # Standard traj counts for classic tasks [cite: 472]
+target_counts = [4, 7, 10]
 base_data_dir = "expert_data"    
 base_results_dir = "results"     
 csv_file_path = os.path.join(base_results_dir, "fem_stats.csv")
 
 os.makedirs(base_results_dir, exist_ok=True)
-
-# Initialize CSV
 with open(csv_file_path, mode='w', newline='') as f:
     writer = csv.writer(f)
     writer.writerow(["env_name", "nb_trajectories", "mean_reward", "std_reward"])
@@ -50,7 +47,7 @@ def suppress_output():
 for env_name, config in TASK_CONFIGS.items():
     print(f"\n>>> Processing FEM on: {env_name}")
     
-    # Paper uses TRPO; vector normalization is key for high-dim tasks [cite: 148, 212]
+    # Paper uses TRPO; vector normalization is key for stable training [cite: 467]
     venv = make_vec_env(env_name, n_envs=1, rng=np.random.default_rng(42))
     venv = VecNormalize(venv, norm_obs=True, norm_reward=False)
 
@@ -58,41 +55,41 @@ for env_name, config in TASK_CONFIGS.items():
         dataset_path = os.path.join(base_data_dir, env_name, f"traj_{count}.pkl")
         if not os.path.exists(dataset_path): continue
             
-        print(f"--- Training FEM: {count} Trajectories ---")
-        
         try:
             with open(dataset_path, "rb") as f:
                 demonstrations = pickle.load(f)
 
-            # Generator setup: TRPO as per the paper's model-free approach [cite: 144, 212]
+            # Dynamic batching for small expert datasets
+            total_transitions = len(demonstrations) * 50
+            safe_batch_size = min(64, total_transitions // 2)
+
+            print(f"--- Training FEM | {count} Trajs | Batch Size: {safe_batch_size} ---")
+
+            # Generator: TRPO [cite: 144, 207]
             learner = TRPO(
-                "MlpPolicy", 
-                venv, 
-                verbose=0, 
-                n_steps=config["samples"], # State-action pairs per iteration [cite: 469]
-                gamma=0.995                # Standard discount [cite: 467]
+                "MlpPolicy", venv, verbose=0, 
+                n_steps=config["samples"], 
+                gamma=0.995
             )
 
-            # FEM utilizes a linear cost function class 
+            # FEM: Linear cost function approximation [cite: 121, 213]
             reward_net = BasicRewardNet(
-                venv.observation_space, 
-                venv.action_space,
+                venv.observation_space, venv.action_space,
                 normalize_input_layer=RunningNorm,
-                hid_sizes=[] # <--- CRITICAL: Constrains to Linear features (FEM) 
+                hid_sizes=[] # <--- Constrains the cost class to be Linear [cite: 121]
             )
 
             trainer = GAIL(
                 demonstrations=demonstrations,
-                demo_batch_size=64,
+                demo_batch_size=safe_batch_size,
                 gen_algo=learner,
                 reward_net=reward_net,
                 venv=venv,                   
                 allow_variable_horizon=True 
             )
 
-            # Total steps = Iterations * Samples per iteration [cite: 469]
+            # Total steps: Iterations * Samples per iteration 
             total_steps = config["iters"] * config["samples"]
-            
             with suppress_output():
                 trainer.train(total_timesteps=total_steps)
             

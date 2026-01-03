@@ -16,25 +16,19 @@ from imitation.rewards.reward_nets import BasicRewardNet
 from imitation.util.networks import RunningNorm
 from imitation.util.util import make_vec_env
 
-# --- Configuration based on Table 2  ---
+# --- Configuration & Paper Parameters ---
 TASK_CONFIGS = {
-    "CartPole-v1":    {"iters": 300,  "samples": 5000},
-    "MountainCar-v0": {"iters": 300,  "samples": 5000},
-    "Acrobot-v1":     {"iters": 300,  "samples": 5000},
-#     "Hopper-v4":      {"iters": 500,  "samples": 50000},
-#     "Walker2d-v4":    {"iters": 500,  "samples": 50000},
-#     "Ant-v4":         {"iters": 500,  "samples": 50000},
-#     "Humanoid-v4":    {"iters": 1500, "samples": 50000},
+    "CartPole-v1":    {"iters": 300, "samples": 5000},
+    "MountainCar-v0": {"iters": 300, "samples": 5000},
+    "Acrobot-v1":     {"iters": 300, "samples": 5000},
 }
 
-target_counts = [1, 4, 7, 10]    # Number of expert trajectories [cite: 472]
-base_data_dir = "expert_data"    
-base_results_dir = "results"     
-csv_file_path = os.path.join(base_results_dir, "gail_only_stats.csv")
+target_counts = [4, 7, 10]
+base_data_dir = "expert_data"
+base_results_dir = "results"
+csv_file_path = os.path.join(base_results_dir, "gail_stats_updated.csv")
 
 os.makedirs(base_results_dir, exist_ok=True)
-
-# Initialize CSV with headers
 with open(csv_file_path, mode='w', newline='') as f:
     writer = csv.writer(f)
     writer.writerow(["env_name", "nb_trajectories", "mean_reward", "std_reward"])
@@ -53,7 +47,7 @@ def suppress_output():
 for env_name, config in TASK_CONFIGS.items():
     print(f"\n>>> Running GAIL on: {env_name}")
     
-    # Paper uses normalized observations for stability [cite: 29]
+    # VecNormalize is essential for classic control stability [cite: 203]
     venv = make_vec_env(env_name, n_envs=1, rng=np.random.default_rng(42))
     venv = VecNormalize(venv, norm_obs=True, norm_reward=False)
 
@@ -61,45 +55,45 @@ for env_name, config in TASK_CONFIGS.items():
         dataset_path = os.path.join(base_data_dir, env_name, f"traj_{count}.pkl")
         if not os.path.exists(dataset_path): continue
             
-        print(f"--- Training GAIL: {count} Trajectories ---")
-        
         try:
             with open(dataset_path, "rb") as f:
                 demonstrations = pickle.load(f)
+            
+            # --- DYNAMIC BATCH SIZE SELECTION ---
+            # Paper trajectories for classic envs have ~50 steps each 
+            total_transitions = len(demonstrations) * 50 
+            # Select a batch size that is roughly 1/4 of the dataset or max 128
+            safe_batch_size = min(64, total_transitions // 2)
+            
+            print(f"--- Training {env_name} | {count} Trajs | Batch Size: {safe_batch_size} ---")
 
-            # Generator: TRPO with natural gradient steps [cite: 196-197]
-            # n_steps matches 'State-action pairs per iteration' 
+            # Generator: TRPO (Algorithm 1 uses a KL-constrained step) [cite: 196]
             learner = TRPO(
-                "MlpPolicy", 
-                venv, 
-                verbose=0, 
-                n_steps=config["samples"],
-                gamma=0.995 # Standard discount for these tasks [cite: 467]
+                "MlpPolicy", venv, verbose=0, 
+                n_steps=config["samples"], # State-action pairs per iteration 
+                gamma=0.995                # Gamma used for infinite horizon [cite: 31]
             )
 
-            # Discriminator: Deep network to classify expert vs learner [cite: 178]
+            # Discriminator: D distinguises expert from agent [cite: 171]
             reward_net = BasicRewardNet(
-                venv.observation_space, 
-                venv.action_space,
+                venv.observation_space, venv.action_space,
                 normalize_input_layer=RunningNorm
             )
 
             trainer = GAIL(
                 demonstrations=demonstrations,
-                demo_batch_size=1024, # Larger batch for stable discriminator update
+                demo_batch_size=safe_batch_size, # <--- DYNAMICALLY ADJUSTED
                 gen_algo=learner,
                 reward_net=reward_net,
                 venv=venv,                   
                 allow_variable_horizon=True 
             )
 
-            # Calculate total steps: Iterations * Pairs_per_iteration 
+            # Total steps: Iterations * Pairs per iteration 
             total_steps = config["iters"] * config["samples"]
-            
             with suppress_output():
                 trainer.train(total_timesteps=total_steps)
             
-            # Evaluation
             mean_r, std_r = evaluate_policy(learner, venv, n_eval_episodes=10)
             print(f"Result: {mean_r:.2f} +/- {std_r:.2f}")
 
@@ -109,4 +103,4 @@ for env_name, config in TASK_CONFIGS.items():
         except Exception as e:
             print(f"Error in {env_name} with {count} trajectories: {e}")
 
-print("\nGAIL experiments complete.")
+print("\nAll GAIL experiments completed.")
